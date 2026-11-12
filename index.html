@@ -419,7 +419,7 @@ function buildOps(){
   if (board.length) ops.push({id:'board-group', route:'contracts', sev:'warn', cat:'Contract', title:`${board.length} contracts sent to the Board with no outcome recorded`, why:`Oldest submission ${fmtD(board.map(a=>boardStep(a).date).sort()[0])}. The sheet has no column for the Board's decision, so set each one's status explicitly.`, q:''});
   INV.filter(i => /renewal/i.test(i.status)).forEach(i => ops.push({id:'renew-'+i.key, route:'investments', sev:'info', cat:'Investment', title:`Placement renewal: ${i.urls[0] ? i.urls[0].replace(/^https?:\/\/(www\.)?/,'').replace(/\/$/,'') : i.name} — ${i.zar ? zar(i.zar) : i.fee} ${i.duration||''}`, why:'Investment - Deals, status “Renewal” (no renewal date in sheet)', q:short(i.comments,100)}));
   D.issues.forEach((x,ix) => ops.push({id:'dupe-'+x.id, route:'migration', sev:'info', cat:'Data', title:x.detail, why:'Same ID on more than one row of '+D.affSheet, q:''}));
-  const lm = perfMonths().pop(); perfAlerts(lm).filter(x => x.sev !== 'info').forEach(x => ops.push({id:'perf-'+x.key+'-'+lm+'-'+x.title.slice(0,30), key:x.key, sev:x.sev, cat:'Performance', title:x.title, why:x.why + ' (' + monthLabel(lm) + ' report)', q:''}));
+  const lm = lastFull(); perfAlerts(lm).filter(x => x.sev !== 'info').forEach(x => ops.push({id:'perf-'+x.key+'-'+lm+'-'+x.title.slice(0,30), key:x.key, sev:x.sev, cat:'Performance', title:x.title, why:x.why + ' (' + monthLabel(lm) + ' report)', q:''}));
   PX().forEach(p => {
     const f = followState(p);
     if (f && f.kind === 'due') ops.push({id:'fu-'+p.key+'-'+p.followUp, pkey:p.key, sev:'warn', cat:'Follow-up', title:`Follow up with ${p.title}`, why:`Follow-up date ${fmtD(p.followUp)}${p.nextAction?' · '+p.nextAction:''}`, q:''});
@@ -494,7 +494,7 @@ function commercialSection(){
       <p class="sub">No monthly figures have been confirmed yet, so these stay empty rather than estimated.</p>
       <div class="empty">${['Clicks','Registrations','FTDs','Deposits','NGR','Commission'].map(k=>`<div><b>—</b>${k}</div>`).join('')}</div>
       <p class="notice" style="margin-top:12px"><b>Next step:</b> ${D.hist&&D.hist.records.length?`your master workbook has historical figures in “${esc(D.hist.sheet)}” waiting for review, and `:''}monthly reports go in Monthly Report Uploads. <button class="btn pri" data-act="go:uploads">Open uploads</button></p></section>`;
-  const m = months[months.length-1]; const {t, n} = monthTotals(m);
+  const m = lastFull(); const {t, n} = monthTotals(m);
   return `<section class="card"><div class="head"><h2>Commercial performance · ${monthLabel(m)}</h2><button class="btn" data-act="go:performance">Open performance</button></div>
     <p class="src" style="margin:4px 0 10px">${n} affiliates in confirmed reports</p>
     ${(() => { const {rows} = rkRank(rkSums('latest'), RK[0]); return rows.length ? `<div style="margin:0 0 12px"><span class="src">Top by FTDs:</span> ${rows.slice(0,5).map(r=>`<button class="btn" data-act="open:a-${esc(r.key)}" style="margin:2px">#${r.rank} ${esc((affByKey(r.key)?first(affByKey(r.key).username):r.key))} · ${fmtN(r.v,'ftd')}</button>`).join('')} <button class="btn" data-act="go:rankings">All rankings</button></div>` : ''; })()}
@@ -965,24 +965,28 @@ function openLead(k){
 const MET = [
   ['clicks','Clicks','n'], ['regs','Registrations','n'], ['ftd','FTDs','n'], ['depCount','Deposit count','n'],
   ['ftdSum','FTD deposit sum','r'], ['depSum','Deposit sum','r'], ['withdrawals','Withdrawals','r'], ['ngr','NGR','r'],
-  ['rsComm','Rev share commission','r'], ['cpaComm','CPA commission','r'], ['commission','Total commission','r']
+  ['rsComm','Rev share commission','r'], ['cpaComm','CPA commission','r'], ['commission','Total commission','r'],
+  ['payments','Payments made','r'], ['active','Customers with activity','n'], ['qualified','Qualified players','n']
 ];
 const METL = Object.fromEntries(MET.map(m => [m[0], m[1]]));
 const SYN = {
   affId:['affiliateid','affid','partnerid','memberid','userid','accountid','id','affiliate#','affiliateno'],
   user:['username','affiliateusername','affiliate','affiliatename','user','partner','partnername','name','member'],
-  month:['month','period','reportingmonth','date'],
+  month:['month','period','reportingmonth','date','monthandyear','monthyear'],
   clicks:['clicks','uniqueclicks','rawclicks','hits','totalclicks'],
   regs:['registrations','signups','signup','regs','newaccounts','registration','reg'],
   ftd:['ftd','ftds','firsttimedepositors','firstdeposits','firstdepositcount','ndc','newdepositingcustomers','ftdcount'],
   depCount:['depositcount','numberofdeposits','depositscount','deposits#','depcount'],
-  ftdSum:['ftdsum','ftdamount','firstdepositamount','firstdepositsum','ftdvalue'],
+  ftdSum:['ftdsum','ftdamount','firstdepositamount','firstdepositsum','ftdvalue','firstdeposit'],
   depSum:['depositsum','totaldeposits','depositamount','depositvalue','deposits','depositstotal'],
   withdrawals:['withdrawals','withdrawalsum','withdrawalamount','totalwithdrawals','withdrawal'],
-  ngr:['ngr','netgamingrevenue','netrevenue','netgaming','netgamerevenue'],
+  ngr:['ngr','calculatedngr','netgamingrevenue','netrevenue','netgaming','netgamerevenue'],
   rsComm:['revsharecommission','revenuesharecommission','rscommission','revshare','revenueshare'],
   cpaComm:['cpacommission','cpaearnings','cpa'],
-  commission:['commission','totalcommission','earnings','affiliatecommission','totalearnings','totalpayout','payout']
+  commission:['commission','totalcommission','earnings','affiliatecommission','totalearnings','totalpayout','payout'],
+  payments:['payments','paymentsmade','paid','amountpaid'],
+  active:['customerswithactivity','activecustomers','activeplayers','activeusers'],
+  qualified:['qualifiedplayers','qualifiedcpa','qualifiedftd','cpaqualified']
 };
 const EXPECTED = ['clicks','regs','ftd','depSum','ngr','commission'];
 const normH = h => String(h||'').toLowerCase().replace(/[^a-z0-9#]/g,'');
@@ -1036,6 +1040,8 @@ function perfAgg(){
 }
 const aggGet = (key, m) => perfAgg()[key + '|' + m];
 function perfFor(key){ return Object.values(perfAgg()).filter(p => p.affKey === key).sort((a,b)=>a.month.localeCompare(b.month)); }
+function lastFull(){ const ms = perfMonths(); const cur = isoToday().slice(0,7); const done = ms.filter(m => m < cur); return done.length ? done[done.length-1] : ms[ms.length-1]; }
+const partial = m => m && !isPeriod(m) && m >= isoToday().slice(0,7);
 function perfMonths(){ return [...new Set(Object.values(perfAgg()).map(p=>p.month))].sort(); }
 function monthTotals(m){
   const t = {}; let n = 0;
@@ -1061,6 +1067,9 @@ function perfAlerts(m){
     }
     if (p.status === 'zero') out.push({key:p.affKey, sev:'info', title:`${who}: zero activity`, why:`Reported as all zeros for ${monthLabel(m)}`});
   });
+  // earnings vs payments recorded in the imported reports, all months up to this one
+  const owed = {}; Object.values(perfAgg()).filter(p => p.month <= m).forEach(p => { if (p.metrics.commission == null || p.metrics.payments == null) return; const o = owed[p.affKey] || (owed[p.affKey] = {e:0, pay:0}); o.e += p.metrics.commission; o.pay += p.metrics.payments; });
+  Object.entries(owed).forEach(([k, o]) => { if (o.e - o.pay >= 500) { const a = affByKey(k); out.push({key:k, sev:'warn', title:`${a ? first(a.username) : k}: earnings ${fmtN(o.e,'commission')}, payments ${fmtN(o.pay,'payments')}`, why:`From the Earnings and Payments columns of imported reports up to ${monthLabel(m)}. Payments made outside MyAffiliates won't show here.`}); } });
   // affiliates marked as sending traffic but missing from this month's reports
   const have = new Set(cur.map(p => p.affKey));
   if (cur.length) A.filter(a => /traffic/i.test(a.status) && !have.has(a.key)).forEach(a => out.push({key:a.key, sev:'info', title:`${first(a.username)}: no figures for ${monthLabel(m)}`, why:'Status is “Traffic coming in” but no report row was imported'}));
@@ -1214,16 +1223,31 @@ function parseMonthOnly(t){
   m = /^(\w{3,9})[\s\-\/]+(20\d\d)$/.exec(t); if (m) { const i = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].toLowerCase().slice(0,3)); if (i >= 0) return m[2]+'-'+String(i+1).padStart(2,'0'); }
   return null;
 }
+/* MyAffiliates exports one file per affiliate: "MyAffiliates - Affiliate Dashboard - betpack.csv" */
+function fileAffiliate(f){
+  if (f.affOverride) return f.affOverride;
+  const base = f.name.replace(/\.[^.]+$/,'').replace(/\s*\(\d+\)$/,'').trim();
+  const m = /dashboard\s*-\s*(.+)$/i.exec(base) || /-\s*([^-]+)$/.exec(base);
+  return (m ? m[1] : base).trim();
+}
 function extractRecords(file, tIdx, mapping, month){
   const tb = file.tables[tIdx]; const rows = tb.rows; const recs = []; let totals = null; const warn = [];
   const cols = Object.entries(mapping.map); const ci = k => { const e = cols.find(([c,v]) => v === k); return e ? +e[0] : null; };
   const cId = ci('affId'), cUser = ci('user'), cMonth = ci('month');
+  const hdr = rows[mapping.row] || [];
+  const fromName = (cId == null && cUser == null) ? fileAffiliate(file) : null;
   for (let r = mapping.row + 1; r < rows.length; r++) {
     const row = rows[r] || []; if (!row.some(x => String(x||'').trim())) continue;
-    const id = cId != null ? String(row[cId]||'').trim() : '', user = cUser != null ? String(row[cUser]||'').trim() : '';
+    const firstLine = v => String(v||'').split(/\r?\n/)[0].trim();
+    const id = cId != null ? String(row[cId]||'').trim() : '', user = cUser != null ? String(row[cUser]||'').trim() : (fromName || '');
+    if (cMonth != null && /^(lifetime|all time|grand total|totals?)\b/i.test(firstLine(row[cMonth]))) {
+      const mt = {}; cols.forEach(([c,k]) => { if (METL[k]) mt[k] = parseNum(row[c]).v; }); totals = {metrics:mt, row:r+1, label:firstLine(row[cMonth])}; continue;
+    }
     const label = (id + ' ' + user).trim();
     const metrics = {}, errs = [];
     cols.forEach(([c,k]) => { if (!METL[k]) return; const p = parseNum(row[c]); metrics[k] = p.v; if (p.err) errs.push(`${METL[k]}: “${p.err}”`); });
+    // keep every other numeric column from the report (product revenue, stakes, bonuses...) as reference
+    const extra = {}; hdr.forEach((h, c) => { if (mapping.map[c] || !String(h||'').trim()) return; const p = parseNum(row[c]); if (p.v != null && p.v !== 0) extra[String(h).trim()] = p.v; });
     if (/^(grand\s*)?totals?\b/i.test(label) || /^(grand\s*)?totals?\b/i.test(String(row[0]||''))) { totals = {metrics, row:r+1}; continue; }
     if (!id && !user) { if (Object.values(metrics).some(v => v != null)) warn.push(`Row ${r+1} has figures but no affiliate ID or username`); continue; }
     const vals = Object.values(metrics);
@@ -1231,11 +1255,11 @@ function extractRecords(file, tIdx, mapping, month){
     let m = month, day = false, monthFromFile = false;
     if (U.mode === 'multi') {
       m = null;
-      if (cMonth != null) { const pd = parseDateCell(row[cMonth]); if (pd) { m = pd.m; day = pd.day; monthFromFile = true; } }
+      if (cMonth != null) { const pd = parseDateCell(firstLine(row[cMonth])); if (pd) { m = pd.m; day = pd.day; monthFromFile = true; } }
       if (!m && file.sheetMonths && file.sheetMonths[tIdx]) { m = file.sheetMonths[tIdx]; monthFromFile = true; }
     } else if (U.mode === 'period') { m = periodSlot(); }
-    else if (cMonth != null) { const pm = parseMonthCell(row[cMonth]); if (pm && pm !== month) { m = pm; monthFromFile = true; } }
-    recs.push({file:file.name, sheet:tb.name, row:r+1, affId:id||null, user:user||null, month:m, day, monthFromFile, metrics, status, errs});
+    else if (cMonth != null) { const pm = parseMonthCell(firstLine(row[cMonth])); if (pm && pm !== month) { m = pm; monthFromFile = true; } }
+    recs.push({file:file.name, sheet:tb.name, row:r+1, affId:id||null, user:user||null, userFromFile:!!fromName, month:m, day, monthFromFile, metrics, extra, status, errs});
   }
   return {recs, totals, warn};
 }
@@ -1288,21 +1312,26 @@ function validate(){
     if (!f.synthetic && !f.error && !f.mapping) v.push({level:'error', text:`${f.name}: no table with recognisable column headings was found. Choose the header row and columns below.`});
     if (f.mapping && !f.synthetic) {
       const ks = Object.values(f.mapping.map);
-      if (!ks.includes('affId') && !ks.includes('user')) v.push({level:'error', text:`${f.name}: no affiliate ID or username column. Map one below.`});
+      const fa = (!ks.includes('affId') && !ks.includes('user')) ? fileAffiliate(f) : null;
+      if (fa) { const a = f.affPick && f.affPick !== 'new' ? affByKey(f.affPick) : f.affPick === 'new' ? null : findAff(null, fa).aff;
+        v.push({level: a ? 'info' : 'warn', text: a ? `${f.name}: affiliate taken from the file name (“${fa}”) and matched to ${first(a.username)}${a.ids.length?' (ID '+a.ids.join('/')+')':''}.` : `${f.name}: the file name says “${fa}”, which doesn't match an affiliate. Choose the affiliate on the file card.`}); }
+      else if (!ks.includes('affId') && !ks.includes('user')) v.push({level:'error', text:`${f.name}: no affiliate ID or username column. Map one below.`});
       else if (!ks.includes('affId')) v.push({level:'warn', text:`${f.name}: no affiliate ID column, so affiliates are matched by username. Check every match.`});
       const miss = EXPECTED.filter(k => !ks.includes(k)); if (miss.length) v.push({level:'info', text:`${f.name}: these columns weren't found and will be recorded as missing (not zero): ${miss.map(k=>METL[k]).join(', ')}`});
       const prev = live.find(b => (b.files||[]).some(x => x.hash === f.hash));
       if (prev) v.push({level: U.allowSameFile ? 'warn' : 'error', text:`${f.name} was already uploaded in the import of ${fmtD(prev.uploadedAt.slice(0,10))} (${monthLabel(prev.month)||'master workbook'}). Tick “Import anyway” only if that import was wrong.`, sameFile:true});
       if (f.kind === 'PDF') v.push({level:'warn', text:`${f.name}: figures were read from PDF text. Compare a few rows against the PDF before confirming.`});
       if (f.totals) { const sums = {}; f.recsOwn.forEach(r => Object.entries(r.metrics).forEach(([k,x]) => { if (x != null) sums[k] = (sums[k]||0) + x; }));
-        Object.entries(f.totals.metrics).forEach(([k,t]) => { if (t == null) return; const s = Math.round((sums[k]||0)*100)/100; if (Math.abs(s - t) > 0.6) v.push({level:'warn', text:`${f.name}: ${METL[k]} rows add up to ${fmtN(s,k)} but the file's total row says ${fmtN(t,k)}`}); else f.totalsOk = (f.totalsOk||0) + 1; }); }
+        Object.entries(f.totals.metrics).forEach(([k,t]) => { if (t == null) return; const s = Math.round((sums[k]||0)*100)/100; if (Math.abs(s - t) > 0.6) v.push({level:'warn', text:`${f.name}: ${METL[k]} rows add up to ${fmtN(s,k)} but the file's ${esc(f.totals.label||'total')} row says ${fmtN(t,k)}`}); else f.totalsOk = (f.totalsOk||0) + 1; });
+        if (f.totalsOk) v.push({level:'info', text:`${f.name}: ${f.totalsOk} columns add up exactly to the file's ${f.totals.label||'total'} row.`}); }
       (f.warnings||[]).forEach(w => v.push({level:'info', text:`${f.name}: ${w}`}));
     }
   });
   // match, duplicates, conflicts, existing data
   const seen = {};
   U.recs.forEach(r => {
-    const ch = U.choice[r.file+'#'+r.row];
+    const fobj = U.files.find(f => f.name === r.file);
+    const ch = U.choice[r.file+'#'+r.row] || (r.userFromFile && fobj && fobj.affPick) || null;
     const m = ch ? (ch === 'new' ? {aff:null, how:'new-chosen'} : {aff:affByKey(ch), how:'chosen'}) : findAff(r.affId, r.user);
     r.affKey = m.aff ? m.aff.key : null; r.how = m.how; r.matchNote = m.note || null; r.options = m.options || null;
     r.flags = [];
@@ -1313,6 +1342,7 @@ function validate(){
     if (!r.month) r.flags.push('nomonth');
     if (r.month && !isPeriod(r.month) && r.month >= isoToday().slice(0,7)) r.flags.push('current');
     if (m.aff && !r.affId && m.aff.userIds && r.user) r.affId = m.aff.userIds[r.user.toLowerCase().replace(/\s/g,'')] || null;
+    if (m.aff && !r.affId && r.userFromFile && m.aff.ids && m.aff.ids.length === 1) r.affId = m.aff.ids[0];
     const k = (r.affKey || ('new:' + (r.affId || r.user))) + '|' + (r.affId||'') + '|' + r.month;
     if (r.status === 'missing') {}
     else if (seen[k]) {
@@ -1335,6 +1365,8 @@ function validate(){
   months.forEach(m => { const n = Object.values(Store[slotStore(m)]||{}).filter(p => p.month === m).length; if (n && U.kind === 'monthly') v.push({level:'warn', text:`${monthLabel(m)} already has confirmed figures for ${n} affiliates. Rows that differ are held back unless you record them as corrections.`}); });
   if (U.mode === 'period') U.recs.forEach(r => { r.recon = r.affKey && r.month ? reconcile(r.affKey, r.affId, r.month, r.metrics) : null; if (r.recon && r.recon.diffs.length) r.flags.push('recon'); });
   const c = f => U.recs.filter(r => r.flags.includes(f)).length;
+  const pre = U.recs.filter(r => r.prestart).length;
+  if (pre) v.push({level:'info', text:`${pre} months before each affiliate's first activity are all zeros. They're shown but not saved, so the history starts at the first active month.`});
   if (c('recon')) v.push({level:'warn', text:`${c('recon')} affiliates' period totals don't match the monthly records already saved for the same months. The period figures are still imported as their own record and nothing else is changed. Check each one.`});
   if (c('current')) v.push({level:'warn', text:`${c('current')} rows are for ${monthLabel(isoToday().slice(0,7))}, which hasn't finished. They'll be imported as a partial month.`});
   const unresolved = U.recs.filter(r => r.flags.includes('conflict') && !U.recs.some(x => x.group === r.group && U.keep[x.file+'#'+x.row])).length;
@@ -1353,6 +1385,7 @@ function recOutcome(r){
   if (r.flags.includes('review')) return ['Choose affiliate','warn'];
   if (r.flags.includes('dupe-same')) return ['Duplicate, skipped','info'];
   if (r.status === 'missing') return ['Missing data, not imported','info'];
+  if (r.prestart) return ['Before first activity, not imported','info'];
   if (r.flags.includes('unchanged')) return ['Already imported, same figures','info'];
   if (r.flags.includes('differs')) return U.correct[r.file+'#'+r.row] ? ['Correction','warn'] : ['Differs from saved, held back','warn'];
   if (r.flags.includes('new') && U.kind !== 'monthly' && r.how !== 'new-chosen') return ['Unmatched, held back','warn'];
@@ -1395,6 +1428,7 @@ function viewUploads(){
     </div>
     <div class="drop" id="u-drop">Or drop the report files here</div>
     ${hasSession?'<button class="btn" data-act="upreset" style="margin-top:10px">Start again</button>':''}</section>`}
+    ${U.autoMulti?`<div class="notice"><b>${esc(U.autoMulti)} has a row per month,</b> so “Report covers” was set to several months. Each row is saved under its own month.</div>`:''}
     ${U.files.filter(f=>!f.synthetic).map((f,i) => fileCard(f, i)).join('')}
     ${hasSession ? `
     <section class="card"><h2 style="margin-bottom:10px">Validation</h2>
@@ -1430,6 +1464,7 @@ function fileCard(f, i){
   const keys = [['','Ignore'],['affId','Affiliate ID'],['user','Username'],['month','Month'],...MET.map(([k,l])=>[k,l])];
   return `<section class="card"><div class="head"><div><h3>${esc(f.name)}</h3><span class="src">${esc(f.kind)} · ${(f.size/1024).toFixed(0)} KB · ${f.recsOwn?f.recsOwn.length:0} affiliate rows${f.totals?' · total row found':''}</span></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">${f.tables.length>1?`<label class="src">Sheet <select data-ftab="${i}" style="background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px;color:var(--ink)">${f.tables.map((t,j)=>`<option value="${j}" ${j===f.tIdx?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label>`:''}
+    ${f.mapping && !Object.values(f.mapping.map).some(k => k === 'affId' || k === 'user') ? `<label class="src">Affiliate (from file name “${esc(fileAffiliate(f))}”) <select data-faff="${i}" style="background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px;color:var(--ink);max-width:220px">${(() => { const auto = findAff(null, fileAffiliate(f)).aff; const cur = f.affPick || (auto ? auto.key : ''); return `<option value="">— choose —</option><option value="new" ${cur==='new'?'selected':''}>Create new affiliate</option>` + allAffiliates().slice().sort((a,b)=>first(a.username).localeCompare(first(b.username))).map(a=>`<option value="${esc(a.key)}" ${cur===a.key?'selected':''}>${esc(first(a.username))} (${esc(a.ids.join('/')||'no ID')})</option>`).join(''); })()}</select></label>` : ''}
     <label class="src">Header row <input type="number" min="1" data-fhdr="${i}" value="${f.mapping?f.mapping.row+1:''}" style="width:70px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px;color:var(--ink)"></label></div></div>
     ${f.mapping ? `<details style="margin-top:8px"><summary class="src" style="cursor:pointer">Column mapping (${Object.keys(f.mapping.map).length} columns recognised) — open to change</summary>
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-top:8px">${hdr.map((h,c)=>`<label class="src">${esc(h||'(blank)')}<select data-fmap="${i}:${c}" style="background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px;color:var(--ink)">${keys.map(([k,l])=>`<option value="${k}" ${(f.mapping.map[c]||'')===k?'selected':''}>${esc(l)}</option>`).join('')}</select></label>`).join('')}</div></details>` : '<p class="missing">No header row found automatically. Enter the header row number.</p>'}
@@ -1474,6 +1509,8 @@ function openCorrection(pid){
     <label class="full">Reason (required)<input id="fx-reason" required placeholder="e.g. Apex re-issued the October report"></label>
     <label>Your name<input id="fx-by" value="${esc(myName)}" required></label>
     <div class="full"><button class="btn pri" type="submit">Save correction</button> <span class="src">The previous figures stay in the record's history.</span></div></form>
+    <section class="sec card"><h2>Source</h2><p class="src">${esc(p.source||'')} · imported ${esc((p.confirmedAt||'').slice(0,10))} by ${esc(p.byName||'')}</p>
+      ${p.extra && Object.keys(p.extra).length ? `<dl style="margin-top:8px">${Object.entries(p.extra).map(([k,v])=>`<dt>${esc(k)}</dt><dd class="mono">${esc(v.toLocaleString('en-ZA'))}</dd>`).join('')}</dl>` : ''}</section>
     ${(p.history||[]).length?`<section class="sec card"><h2>Earlier versions</h2>${p.history.map(h=>`<div class="src" style="padding:4px 0">v${h.version} · ${esc((h.at||'').slice(0,16).replace('T',' '))} · ${esc(h.byName||'')} · ${esc(h.reason||h.batchId||'')} — ${MET.filter(([k])=>h.metrics[k]!=null).map(([k,l])=>l+' '+fmtN(h.metrics[k],k)).join(', ')}</div>`).join('')}</section>`:''}
   </div>`;
   dr.classList.add('open'); document.getElementById('scrim').classList.add('open');
@@ -1505,7 +1542,7 @@ async function confirmUpload(){
   const reason = (document.getElementById('u-reason')||{}).value?.trim() || '';
   if (Object.values(U.correct).some(Boolean) && !reason) return toast('Add a reason for the corrections');
   const at = new Date().toISOString(); const id = (U.test?'t':'b') + Date.now().toString(36);
-  const months = [...new Set(U.recs.map(r=>r.month).filter(Boolean))].sort();
+  const months = [...new Set(U.recs.filter(willImport).map(r=>r.month).filter(Boolean))].sort();
   const btn = document.querySelector('[data-act=upconfirm]'); if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   const records = []; let newAff = 0; const newKeys = {};
   for (const r of U.recs) {
@@ -1515,9 +1552,9 @@ async function confirmUpload(){
       const nk = 'n' + String(r.affId || r.user).toLowerCase().replace(/[^a-z0-9]+/g,'-').slice(0,40);
       key = nk; if (!newKeys[nk]) { newKeys[nk] = {affId:r.affId, user:r.user, firstSeen:r.month, batchId:id, createdAt:at, byName:by}; newAff++; }
     }
-    records.push({affKey:key||null, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, status:r.status, outcome, imported:imp, source:`${r.file} › ${r.sheet} row ${r.rows ? r.rows[0]+'–'+r.rows[r.rows.length-1] : r.row}`, recon: r.recon && r.recon.diffs.length ? r.recon.diffs : null});
+    records.push({affKey:key||null, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, extra:r.extra||null, status:r.status, outcome, imported:imp, source:`${r.file} › ${r.sheet} row ${r.rows ? r.rows[0]+'–'+r.rows[r.rows.length-1] : r.row}`, recon: r.recon && r.recon.diffs.length ? r.recon.diffs : null});
   }
-  const counts = {identified: new Set(U.recs.map(r => r.affKey || r.affId || r.user)).size, imported: records.filter(r=>r.imported).length, newAff, dupes: U.recs.filter(r=>r.flags.includes('dupe-same')||r.flags.includes('conflict')).length, review: U.recs.filter(r=>!willImport(r) && !['Missing data, not imported','Already imported, same figures','Duplicate, skipped','Conflict, not used'].includes(recOutcome(r)[0])).length, missing:U.recs.filter(r=>r.status==='missing').length, failed:U.recs.filter(r=>r.status==='failed').length};
+  const counts = {identified: new Set(U.recs.map(r => r.affKey || r.affId || r.user)).size, imported: records.filter(r=>r.imported).length, newAff, dupes: U.recs.filter(r=>r.flags.includes('dupe-same')||r.flags.includes('conflict')).length, review: U.recs.filter(r=>!willImport(r) && !['Missing data, not imported','Already imported, same figures','Duplicate, skipped','Conflict, not used','Before first activity, not imported'].includes(recOutcome(r)[0])).length, missing:U.recs.filter(r=>r.status==='missing').length, failed:U.recs.filter(r=>r.status==='failed').length};
   const batch = {id, kind:U.kind, mode:U.mode, test:U.test, month: U.kind==='monthly' && U.mode==='month' ? U.month : null, period: U.mode==='period' ? periodSlot() : null, monthsLabel: U.mode==='period' ? 'Period total: ' + monthLabel(periodSlot()) : months.length>1 ? `${monthLabel(months[0])} – ${monthLabel(months[months.length-1])}` : months.length === 1 && U.mode !== 'month' ? monthLabel(months[0]) : null, uploadedAt:at, by:Store.me||null, byName:by, files:U.files.map(f=>({name:f.name, hash:f.hash, kind:f.kind, size:f.size, sheet:f.tables[f.tIdx]?.name||null, mapping:f.mapping?f.mapping.map:null})), counts, status:'confirmed', validation:U.validation.map(x=>({level:x.level, text:x.text})), records, corrections:[]};
   if (U.test) {
     if (await Store.write('sbx/'+id, batch)) { Store.sbx[id] = batch; toast('Test import saved. Live data unchanged.'); newSession(); upTab = 'tests'; refresh(); }
@@ -1529,7 +1566,7 @@ async function confirmUpload(){
   for (const r of records.filter(r => r.imported)) {
     const col = slotStore(r.month); const pid = perfId(r.affKey, r.affId, r.month); const ex = Store[col][pid];
     const body = ex ? {...ex, metrics:r.metrics, version:(ex.version||1)+1, correctedAt:at, byName:by, reason, batchId:id, history:[{version:ex.version||1, metrics:ex.metrics, at:ex.correctedAt||ex.confirmedAt, byName:ex.byName, batchId:ex.batchId, reason:ex.reason||null}, ...(ex.history||[])]}
-      : {affKey:r.affKey, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, status:r.status, batchId:id, source:r.source, confirmedAt:at, byName:by, version:1, history:[]};
+      : {affKey:r.affKey, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, extra:r.extra||null, status:r.status, batchId:id, source:r.source, confirmedAt:at, byName:by, version:1, history:[]};
     if (await Store.write(col+'/'+pid, body)) Store[col][pid] = body;
   }
   _aggCache = null;
@@ -1543,6 +1580,10 @@ async function addFiles(fileList){
       const f = await readFile(file); f.tIdx = 0; let best = null;
       f.tables.forEach((t, j) => { const m = detectMapping(t.rows); if (m && (!best || m.score > best.m.score)) best = {j, m}; });
       if (best) { f.tIdx = best.j; f.mapping = best.m; } else f.mapping = null;
+      if (f.mapping && U.mode === 'month' && U.kind === 'monthly') {
+        const mc = Object.entries(f.mapping.map).find(([c,k]) => k === 'month');
+        if (mc) { const ms = new Set(f.tables[f.tIdx].rows.slice(f.mapping.row+1).map(r => parseMonthCell(String((r||[])[+mc[0]]||'').split(/\r?\n/)[0].trim())).filter(Boolean)); if (ms.size >= 2) { U.mode = 'multi'; U.autoMulti = f.name; } }
+      }
       U.files.push(f);
     } catch(e) { U.files.push({name:file.name, size:file.size, error: e.message || String(e), tables:[]}); }
   }
@@ -1563,11 +1604,17 @@ function rebuild(){
       if (!f.mapping) f.mapping = mp;
       const x = extractRecords(f, i, mp, U.month); f.recsOwn.push(...x.recs); if (!useAll) f.totals = x.totals; f.warnings.push(...x.warn);
     });
-    U.recs.push(...combineDaily(f.recsOwn, f));
+    U.recs.push(...markPrestart(combineDaily(f.recsOwn, f)));
   });
   validate(); viewUploads();
 }
 /* a report broken down by day is rolled up into one record per affiliate per month (within the same file only) */
+function markPrestart(recs){
+  const groups = {};
+  recs.forEach(r => { if (r.month && !isPeriod(r.month)) (groups[(r.affId||'')+'|'+(r.user||'').toLowerCase()] ||= []).push(r); });
+  Object.values(groups).forEach(g => { const act = g.filter(r => r.status === 'ok').map(r => r.month).sort()[0]; g.forEach(r => { r.prestart = r.status === 'zero' && (!act || r.month < act); }); });
+  return recs;
+}
 function combineDaily(recs, f){
   if (U.mode !== 'multi') return recs;
   const out = [], groups = {};
@@ -1596,6 +1643,7 @@ function wireUpload(){
   document.querySelectorAll('[data-ftab]').forEach(s => s.addEventListener('change', () => { const f = U.files[+s.dataset.ftab]; f.tIdx = +s.value; f.mapping = detectMapping(f.tables[f.tIdx].rows); rebuild(); }));
   document.querySelectorAll('[data-fhdr]').forEach(s => s.addEventListener('change', () => { const f = U.files[+s.dataset.fhdr]; const r = Math.max(0, (+s.value||1) - 1); const m = {row:r, map:{}}; (f.tables[f.tIdx].rows[r]||[]).forEach((h,c) => { const n = normH(h); for (const [k,l] of Object.entries(SYN)) if (l.includes(n) && !Object.values(m.map).includes(k)) { m.map[c] = k; break; } }); f.mapping = m; rebuild(); }));
   document.querySelectorAll('[data-fmap]').forEach(s => s.addEventListener('change', () => { const [i,c] = s.dataset.fmap.split(':').map(Number); const f = U.files[i]; Object.keys(f.mapping.map).forEach(k => { if (f.mapping.map[k] === s.value && s.value) delete f.mapping.map[k]; }); if (s.value) f.mapping.map[c] = s.value; else delete f.mapping.map[c]; rebuild(); }));
+  document.querySelectorAll('[data-faff]').forEach(s => s.addEventListener('change', () => { const f = U.files[+s.dataset.faff]; f.affPick = s.value || null; validate(); viewUploads(); }));
   document.querySelectorAll('[data-pick]').forEach(s => s.addEventListener('change', () => { if (s.value) U.choice[s.dataset.pick] = s.value; else delete U.choice[s.dataset.pick]; validate(); viewUploads(); }));
   const rs = document.getElementById('u-reason'); if (rs) rs.addEventListener('input', () => U.reason = rs.value);
 }
@@ -1610,7 +1658,7 @@ function viewPerformance(){
       <div class="notice"><b>Next step:</b> ${D.hist&&D.hist.records.length?'import the historical figures found in your master workbook, then ':''}upload your latest Apex affiliate report. <button class="btn pri" data-act="go:uploads">Open Monthly Report Uploads</button></div></div>`;
     return;
   }
-  if (!perfSel.month || !months.includes(perfSel.month)) perfSel.month = months[months.length-1];
+  if (!perfSel.month || !months.includes(perfSel.month)) perfSel.month = lastFull();
   const m = perfSel.month, pm = prevMonth(m);
   const {t, n} = monthTotals(m); const P0 = monthTotals(pm).t; const hasPrev = months.includes(pm);
   const delta = k => { if (!hasPrev || t[k]==null || P0[k]==null || !P0[k]) return ''; const d = (t[k]-P0[k])/Math.abs(P0[k])*100; return `<span class="h" style="color:${d>=0?'var(--good)':'var(--crit)'}">${d>=0?'▲':'▼'} ${Math.abs(d).toFixed(0)}% vs ${monthShort(pm)}</span>`; };
@@ -1621,8 +1669,8 @@ function viewPerformance(){
   const alerts = perfAlerts(m);
   const SEVC2 = {crit:'var(--crit)', warn:'var(--warn)', info:'var(--info)'};
   V.innerHTML = `<div class="wrap">
-    <div class="head"><div><h1>Performance</h1><p class="sub">${monthLabel(m)} · ${n} affiliates reported · confirmed imports only</p></div>
-      <div style="display:flex;gap:8px;align-items:center"><label class="src">Month <select id="pm" style="background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--ink)">${months.slice().reverse().map(x=>`<option value="${x}" ${x===m?'selected':''}>${monthLabel(x)}</option>`).join('')}</select></label></div></div>
+    <div class="head"><div><h1>Performance</h1><p class="sub">${monthLabel(m)}${partial(m)?' (month not finished, partial figures)':''} · ${n} affiliates reported · confirmed imports only</p></div>
+      <div style="display:flex;gap:8px;align-items:center"><label class="src">Month <select id="pm" style="background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--ink)">${months.slice().reverse().map(x=>`<option value="${x}" ${x===m?'selected':''}>${monthLabel(x)}${partial(x)?' (partial)':''}</option>`).join('')}</select></label></div></div>
     <section class="grid tiles">${['clicks','regs','ftd','depSum','ngr','commission'].map(k=>`<div class="tile" style="cursor:default"><span class="v">${t[k]==null?'—':fmtN(t[k],k)}</span><span class="l">${METL[k]}</span>${t[k]==null?'<span class="h">Not in this month\'s reports</span>':delta(k)}</div>`).join('')}
       <div class="tile" style="cursor:default"><span class="v">${pctS(t.regs,t.clicks)}</span><span class="l">Click → registration</span></div>
       <div class="tile" style="cursor:default"><span class="v">${pctS(t.ftd,t.regs)}</span><span class="l">Registration → FTD</span></div></section>
@@ -1704,29 +1752,29 @@ const addMonths = (m, n) => { const d = new Date(m+'-01T00:00:00'); d.setMonth(d
 function rkRanges(){
   const ms = perfMonths(); const out = [];
   if (ms.length) {
-    const last = ms[ms.length-1];
-    out.push(['latest', `Latest month (${monthLabel(last)})`]);
+    const last = lastFull();
+    out.push(['latest', `Latest full month (${monthLabel(last)})`]);
     out.push(['last3', `Last 3 months (${monthShort(addMonths(last,-2))} – ${monthShort(last)})`]);
     out.push(['ytd', `Year to date ${last.slice(0,4)}`]);
     out.push(['all', `All monthly figures (${monthShort(ms[0])} – ${monthShort(last)})`]);
-    ms.slice().reverse().forEach(m => out.push(['m:'+m, monthLabel(m)]));
+    ms.slice().reverse().forEach(m => out.push(['m:'+m, monthLabel(m) + (partial(m) ? ' (partial)' : '')]));
   }
   [...new Set(Object.values(Store.periods||{}).map(p => p.month))].sort().reverse().forEach(s => out.push(['p:'+s, 'Period report: ' + monthLabel(s)]));
   return out;
 }
 function rkMonths(range){
   const ms = perfMonths(); if (!ms.length) return [];
-  const last = ms[ms.length-1];
+  const last = lastFull();
   if (range === 'latest') return [last];
   if (range === 'last3') return [addMonths(last,-2), addMonths(last,-1), last];
-  if (range === 'ytd') return ms.filter(m => m.startsWith(last.slice(0,4)));
+  if (range === 'ytd') return ms.filter(m => m.startsWith(last.slice(0,4)) && m <= last);
   if (range === 'all') return ms;
   if (range.startsWith('m:')) return [range.slice(2)];
   return [];
 }
 function rkPrevRange(range){
   const ms = perfMonths(); if (!ms.length) return null;
-  const last = ms[ms.length-1];
+  const last = lastFull();
   if (range === 'latest') return {months:[addMonths(last,-1)], label:monthLabel(addMonths(last,-1))};
   if (range.startsWith('m:')) { const p = addMonths(range.slice(2),-1); return {months:[p], label:monthLabel(p)}; }
   if (range === 'last3') return {months:[addMonths(last,-5), addMonths(last,-4), addMonths(last,-3)], label:`${monthShort(addMonths(last,-5))} – ${monthShort(addMonths(last,-3))}`};
@@ -1830,7 +1878,7 @@ function viewRankings(){
 }
 function affRankLine(key){
   const ms = perfMonths(); if (!ms.length) return '';
-  const last = ms[ms.length-1]; const sums = rkSums('latest');
+  const last = lastFull(); const sums = rkSums('latest');
   if (!sums[key]) return '';
   const parts = ['ftd','ngr'].map(k => { const d = RK.find(x=>x.k===k); const {rows} = rkRank(sums, d); const r = rows.find(x => x.key === key); return r ? `#${r.rank} of ${rows.length} by ${d.l}` : null; }).filter(Boolean);
   return parts.length ? `<div class="notice"><b>Ranking in ${esc(monthLabel(last))}:</b> ${parts.join(' · ')} <button class="btn" data-act="go:rankings" style="margin-left:6px">Rankings</button></div>` : '';
