@@ -1008,6 +1008,22 @@ const periodParts = s => { const [f, to] = s.slice(1).split('_'); return {from:f
 const monthLabel = m => { if (!m) return ''; if (isPeriod(m)) { const {from, to} = periodParts(m); return (from === 'start' ? 'Since start' : new Date(from+'-01T00:00:00').toLocaleDateString('en-ZA',{month:'short',year:'numeric'})) + ' – ' + new Date(to+'-01T00:00:00').toLocaleDateString('en-ZA',{month:'short',year:'numeric'}); } return new Date(m+'-01T00:00:00').toLocaleDateString('en-ZA',{month:'long',year:'numeric'}); };
 const monthShort = m => !m ? '' : isPeriod(m) ? monthLabel(m) : new Date(m+'-01T00:00:00').toLocaleDateString('en-ZA',{month:'short',year:'2-digit'});
 const fmtN = (v,k) => v==null ? '—' : (MET.find(m=>m[0]===k)||[])[2]==='r' ? (v<0?'-':'')+'R'+Math.abs(v).toLocaleString('en-ZA',{minimumFractionDigits:0,maximumFractionDigits:0}).replace(/,/g,' ') : Math.round(v).toLocaleString('en-ZA').replace(/,/g,' ');
+/* one cell, four states: a number (0 shown as 0), not available (blank / column not in report), import error */
+function cellState(v, k, fieldErr, fields){
+  if (fieldErr && k in fieldErr) return `<span style="color:var(--crit)" title="Couldn't read “${esc(fieldErr[k])}”">Import error</span>`;
+  if (v == null) return `<span class="muted" title="${fields && !(k in fields) ? 'This report has no column for it' : 'The cell was blank in the report'}">Not available</span>`;
+  return fmtN(v, k);
+}
+/* month-on-month change without dividing by zero or treating missing as zero */
+function momChange(cur, prev, hasPrevRecord = true){
+  if (!hasPrevRecord) return {t:'No comparable baseline', c:'var(--ink-3)'};
+  if (cur == null || prev == null) return {t:'Not available', c:'var(--ink-3)'};
+  if (prev === 0 && cur === 0) return {t:'No change', c:'var(--ink-3)'};
+  if (prev === 0) return {t: cur > 0 ? 'New activity' : 'No comparable baseline', c: cur > 0 ? 'var(--good)' : 'var(--ink-3)'};
+  const d = (cur - prev) / Math.abs(prev) * 100;
+  if (Math.abs(d) < 0.05) return {t:'No change', c:'var(--ink-3)'};
+  return {t:`${d > 0 ? '▲' : '▼'} ${Math.abs(d) >= 10 ? Math.abs(d).toFixed(0) : Math.abs(d).toFixed(1)}%`, c: d > 0 ? 'var(--good)' : 'var(--crit)', d};
+}
 const pctS = (a,b) => (a==null||!b) ? '—' : (a/b*100).toFixed(1)+'%';
 
 /* ---- affiliate lookup (master + newly identified from reports) ---- */
@@ -1041,8 +1057,9 @@ function perfAgg(){
   if (_aggSrc === Store.perf && _aggCache) return _aggCache;
   const out = {};
   Object.entries(Store.perf||{}).forEach(([pid, p]) => {
-    const k = p.affKey + '|' + p.month; const o = out[k] || (out[k] = {affKey:p.affKey, month:p.month, user:p.user, metrics:{}, docs:[], version:1, status:'zero'});
+    const k = p.affKey + '|' + p.month; const o = out[k] || (out[k] = {affKey:p.affKey, month:p.month, user:p.user, metrics:{}, docs:[], version:1, status:'zero', fieldErr:{}, fields:{}});
     o.docs.push(pid); o.version = Math.max(o.version, p.version||1); if (p.status === 'ok') o.status = 'ok';
+    Object.assign(o.fieldErr, p.fieldErr||{}); Object.assign(o.fields, p.fields||{});
     MET.forEach(([mk]) => { const v = p.metrics[mk]; if (v != null) o.metrics[mk] = (o.metrics[mk]||0) + v; });
   });
   Object.values(out).forEach(o => MET.forEach(([mk]) => { if (!(mk in o.metrics)) o.metrics[mk] = null; }));
@@ -1225,22 +1242,29 @@ function parseNum(v){
   if (!/^\d*\.?\d+$/.test(t)) return {v:null, err:String(v).trim()};
   const n = parseFloat(t); return {v: neg ? -n : n};
 }
-function parseMonthCell(v){ const r = parseDateCell(v); return r ? r.m : null; }
-function parseDateCell(v){
-  if (!v) return null; const t = String(v).trim(); let m;
-  const mo = s => ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(s.toLowerCase().slice(0,3));
-  if ((m = /^(20\d\d)-(\d{1,2})-(\d{1,2})/.exec(t))) return {m:m[1]+'-'+m[2].padStart(2,'0'), day:true};
-  if ((m = /^(\d{1,2})[\/.](\d{1,2})[\/.](20\d\d)/.exec(t))) return {m:m[3]+'-'+m[2].padStart(2,'0'), day:true};
-  if ((m = /^(\d{1,2})\s+(\w{3,9})\s+(20\d\d)/.exec(t)) && mo(m[2]) >= 0) return {m:m[3]+'-'+String(mo(m[2])+1).padStart(2,'0'), day:true};
-  if ((m = /^(\d{1,2})[\/.](20\d\d)$/.exec(t))) return {m:m[2]+'-'+m[1].padStart(2,'0'), day:false};
-  if (/^\d{5}(\.\d+)?$/.test(t)) { const d = new Date(Date.UTC(1899,11,30) + Math.floor(+t)*864e5); return {m:d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'), day:true}; }
-  const r = parseMonthOnly(t); return r ? {m:r, day:false} : null;
-}
-function parseMonthOnly(t){
-  let m = /^(20\d\d)-(\d{1,2})/.exec(t); if (m) return m[1]+'-'+m[2].padStart(2,'0');
-  m = /^(\w{3,9})[\s\-\/]+(20\d\d)$/.exec(t); if (m) { const i = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].toLowerCase().slice(0,3)); if (i >= 0) return m[2]+'-'+String(i+1).padStart(2,'0'); }
+/* Reporting period parser. Reads the whole cell, drops line breaks, extra spaces and the
+   "Customer Report" label MyAffiliates adds, then finds the month and the four-digit year.
+   Never uses today's date or the upload date, and never guesses a missing year. */
+const MONTHS_EN = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const MONTH_RX = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+const monthIdx = s => ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(String(s).toLowerCase().slice(0,3)) + 1;
+function cleanPeriodText(v){ return String(v ?? '').replace(/customer\s+report/ig, ' ').replace(/[\r\n\t ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+function parsePeriod(v){
+  const raw = v == null ? '' : String(v); const t = cleanPeriodText(raw); if (!t) return null;
+  const mk = (y, mn, day, note) => (mn >= 1 && mn <= 12 && +y >= 1990 && +y <= 2100) ? {period:`${y}-${String(mn).padStart(2,'0')}`, year:+y, monthNum:+mn, monthName:MONTHS_EN[mn-1], day:!!day, note:note||null, clean:t, raw} : null;
+  let m;
+  if ((m = /^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?\b/.exec(t))) return mk(m[1], +m[2], m[3]);
+  if ((m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/.exec(t))) return mk(m[3], +m[2], true);
+  if ((m = /^(\d{1,2})[\/.\-](\d{4})$/.exec(t))) return mk(m[2], +m[1]);
+  if ((m = new RegExp('(?:^|[^a-z])(\\d{1,2}\\s+)?' + MONTH_RX + '\\.?[\\s,\\-\\/]*(\\d{4})\\b', 'i').exec(t))) return mk(m[3], monthIdx(m[2]), !!m[1]);
+  if ((m = new RegExp('\\b(\\d{4})[\\s,\\-\\/]+' + MONTH_RX + '\\b', 'i').exec(t))) return mk(m[1], monthIdx(m[2]));
+  if ((m = /^(\d{5})(?:\.\d+)?$/.exec(t))) { const d = new Date(Date.UTC(1899,11,30) + (+m[1])*864e5); return mk(d.getUTCFullYear(), d.getUTCMonth()+1, true, 'Read from an Excel date'); }
+  if ((m = new RegExp('^' + MONTH_RX + '\\.?[\\s\\-\\/\']+(\\d{2})$', 'i').exec(t))) return mk('20' + m[2], monthIdx(m[1]), false, `Two-digit year “${m[2]}” read as 20${m[2]}. Check it.`);
   return null;
 }
+function parseMonthCell(v){ const r = parsePeriod(v); return r ? r.period : null; }
+function parseDateCell(v){ const r = parsePeriod(v); return r ? {m:r.period, day:r.day} : null; }
+function parseMonthOnly(t){ const r = parsePeriod(t); return r ? r.period : null; }
 /* MyAffiliates exports one file per affiliate: "MyAffiliates - Affiliate Dashboard - betpack.csv" */
 function fileAffiliate(f){
   if (f.affOverride) return f.affOverride;
@@ -1257,28 +1281,36 @@ function extractRecords(file, tIdx, mapping, month){
   const fromName = (cId == null && cUser == null) ? fileAffiliate(file) : null;
   for (let r = mapping.row + 1; r < rows.length; r++) {
     const row = rows[r] || []; if (!row.some(x => String(x||'').trim())) continue;
-    const firstLine = v => String(v||'').split(/\r?\n/)[0].trim();
+    const firstLine = v => cleanPeriodText(v);
     const id = cId != null ? String(row[cId]||'').trim() : '', user = cUser != null ? String(row[cUser]||'').trim() : (fromName || '');
     if (cMonth != null && /^(lifetime|all time|grand total|totals?)\b/i.test(firstLine(row[cMonth]))) {
       const mt = {}; cols.forEach(([c,k]) => { if (METL[k]) mt[k] = parseNum(row[c]).v; }); totals = {metrics:mt, row:r+1, label:firstLine(row[cMonth])}; continue;
     }
     const label = (id + ' ' + user).trim();
-    const metrics = {}, errs = [];
-    cols.forEach(([c,k]) => { if (!METL[k]) return; const p = parseNum(row[c]); metrics[k] = p.v; if (p.err) errs.push(`${METL[k]}: “${p.err}”`); });
+    const metrics = {}, errs = [], fieldErr = {}, raw = {};
+    cols.forEach(([c,k]) => { if (!METL[k]) return; const rv = row[c]; raw[k] = rv == null ? null : String(rv); const p = parseNum(rv); metrics[k] = p.v; if (p.err) { errs.push(`${METL[k]}: “${p.err}”`); fieldErr[k] = p.err; } });
     // keep every other numeric column from the report (product revenue, stakes, bonuses...) as reference
     const extra = {}; hdr.forEach((h, c) => { if (mapping.map[c] || !String(h||'').trim()) return; const p = parseNum(row[c]); if (p.v != null) extra[String(h).trim()] = p.v; });
     if (/^(grand\s*)?totals?\b/i.test(label) || /^(grand\s*)?totals?\b/i.test(String(row[0]||''))) { totals = {metrics, row:r+1}; continue; }
     if (!id && !user) { if (Object.values(metrics).some(v => v != null)) warn.push(`Row ${r+1} has figures but no affiliate ID or username`); continue; }
-    const vals = Object.values(metrics);
-    const status = errs.length ? 'failed' : vals.every(v => v == null) ? 'missing' : vals.every(v => v == null || v === 0) ? 'zero' : 'ok';
-    let m = month, day = false, monthFromFile = false;
+    // four states per figure: a number (0 included), missing (blank / no column), import error (unreadable)
+    const mkeys = Object.keys(fields); const okVals = mkeys.filter(k => !(k in fieldErr)).map(k => metrics[k]);
+    const nErr = Object.keys(fieldErr).length;
+    const status = (mkeys.length && nErr === mkeys.length) ? 'failed' : okVals.every(v => v == null) ? (nErr ? 'failed' : 'missing') : okVals.every(v => v == null || v === 0) ? 'zero' : 'ok';
+    const partial = status !== 'failed' && nErr > 0;
+    let m = month, day = false, monthFromFile = false, pinfo = null;
+    const periodRaw = cMonth != null && row[cMonth] != null ? String(row[cMonth]) : null;
     if (U.mode === 'multi') {
       m = null;
-      if (cMonth != null) { const pd = parseDateCell(firstLine(row[cMonth])); if (pd) { m = pd.m; day = pd.day; monthFromFile = true; } }
-      if (!m && file.sheetMonths && file.sheetMonths[tIdx]) { m = file.sheetMonths[tIdx]; monthFromFile = true; }
+      if (cMonth != null) { pinfo = parsePeriod(row[cMonth]); if (pinfo) { m = pinfo.period; day = pinfo.day; monthFromFile = true; } }
+      if (!m && file.sheetMonths && file.sheetMonths[tIdx]) { m = file.sheetMonths[tIdx]; pinfo = parsePeriod(m); monthFromFile = true; }
     } else if (U.mode === 'period') { m = periodSlot(); }
-    else if (cMonth != null) { const pm = parseMonthCell(firstLine(row[cMonth])); if (pm && pm !== month) { m = pm; monthFromFile = true; } }
-    recs.push({file:file.name, sheet:tb.name, fields, row:r+1, affId:id||null, user:user||null, userFromFile:!!fromName, month:m, day, monthFromFile, metrics, extra, status, errs});
+    else if (cMonth != null) { pinfo = parsePeriod(row[cMonth]); if (pinfo && pinfo.period !== month) { m = pinfo.period; monthFromFile = true; } }
+    const fixKey = file.name + '#' + (r+1); let manual = false;
+    if (U.monthFix && U.monthFix[fixKey]) { m = U.monthFix[fixKey]; pinfo = parsePeriod(m); manual = true; }
+    if (!pinfo && m && !isPeriod(m)) pinfo = parsePeriod(m);
+    recs.push({file:file.name, sheet:tb.name, fields, row:r+1, affId:id||null, user:user||null, userFromFile:!!fromName, month:m, day, monthFromFile, monthManual:manual,
+      period: pinfo ? {year:pinfo.year, monthNum:pinfo.monthNum, monthName:pinfo.monthName, note:pinfo.note} : null, periodRaw, metrics, raw, fieldErr, partial, extra, status, errs});
   }
   return {recs, totals, warn};
 }
@@ -1397,12 +1429,22 @@ function validate(){
   if (c('review')) v.push({level:'warn', text:`${c('review')} rows match more than one affiliate. Choose the right one in the preview.`});
   if (c('review-id')) v.push({level:'warn', text:`${c('review-id')} rows matched by username because their ID wasn't found. Check them.`});
   if (c('new')) v.push({level:'warn', text:`${c('new')} rows don't match any affiliate in the master database and are held back. Choose the affiliate, or add them to the Master Affiliate Database first. Reports never create affiliates.`});
-  if (c('failed')) v.push({level:'warn', text:`${c('failed')} rows contain values that aren't numbers. They're held back as failed extractions.`});
+  const nFail = U.recs.filter(r => r.status === 'failed').length, nPart = U.recs.filter(r => r.partial).length;
+  if (nFail) v.push({level:'warn', text:`${nFail} rows couldn't be read at all (import error). They're held back; check the file.`});
+  if (nPart) v.push({level:'warn', text:`${nPart} rows have some unreadable values. Those fields are saved as “import error”; the rest of the row is imported.`});
+  const nNo = U.recs.filter(r => !r.month && r.status !== 'missing').length;
+  if (nNo) v.push({level:'warn', text:`${nNo} rows have no recognisable reporting month. Set the month on each in the preview; until then they're held back. The rest of the report imports normally.`});
+  const notes = U.recs.filter(r => r.period && r.period.note && !/Excel date/.test(r.period.note));
+  if (notes.length) v.push({level:'warn', text:`${notes.length} rows: ${notes[0].period.note}`});
+  const man = U.recs.filter(r => r.monthManual).length; if (man) v.push({level:'info', text:`${man} rows had their month set by hand. This is recorded with each record.`});
+  const zeros = U.recs.filter(r => r.status === 'zero' && r.month).length;
+  if (zeros) v.push({level:'info', text:`${zeros} months show no activity (all zeros). They're imported as reported zeros, not as missing.`});
+  if (!IMPORT_TESTS.ok) v.push({level:'error', text:`Import engine self-test failed (${IMPORT_TESTS.results.filter(x=>!x.pass).map(x=>x.name).join(', ')}). Imports are blocked until it passes.`});
   U.validation = [...v, ...(U.extraValidation||[])];
 }
 function recOutcome(r){
-  if (r.status === 'failed') return ['Failed extraction','crit'];
-  if (r.flags.includes('nomonth')) return [U.mode === 'multi' ? 'No month found' : 'No month','crit'];
+  if (r.status === 'failed') return ['Import error','crit'];
+  if (r.flags.includes('nomonth')) return ['Set the month','crit'];
   if (r.flags.includes('conflict')) { const kept = U.recs.find(x => x.group === r.group && U.keep[x.file+'#'+x.row]); if (!kept) return ['Conflict','crit']; if (kept !== r) return ['Conflict, not used','info']; }
   if (r.flags.includes('review')) return ['Choose affiliate','warn'];
   if (r.flags.includes('dupe-same')) return ['Duplicate, skipped','info'];
@@ -1412,10 +1454,11 @@ function recOutcome(r){
   if (r.flags.includes('differs')) return U.correct[r.file+'#'+r.row] ? ['Correction','warn'] : ['Differs from saved, held back','warn'];
   if (r.flags.includes('new')) return ['Not matched, choose affiliate','warn'];
   if (r.flags.includes('unconfirmed')) return ['Confirm affiliate first','warn'];
-  if (r.status === 'zero') return ['Zero activity','ok'];
+  if (r.partial) return ['Will import, some fields unreadable','warn'];
+  if (r.status === 'zero') return ['No activity (0), will import','ok'];
   return [r.flags.includes('review-id') ? 'Matched by username' : 'Will import','ok'];
 }
-const willImport = r => { const [o] = recOutcome(r); return ['Will import','Matched by username','Zero activity','New affiliate','Correction'].includes(o); };
+const willImport = r => { const [o] = recOutcome(r); return ['Will import','Matched by username','No activity (0), will import','Will import, some fields unreadable','Correction'].includes(o); };
 
 /* ---- upload page ---- */
 let upTab = 'new';
@@ -1450,6 +1493,8 @@ function viewUploads(){
     </div>
     <div class="drop" id="u-drop">Or drop the report files here</div>
     ${hasSession?'<button class="btn" data-act="upreset" style="margin-top:10px">Start again</button>':''}</section>`}
+    <details class="card" style="padding:12px 16px"><summary class="src" style="cursor:pointer;color:${IMPORT_TESTS.ok?'var(--good)':'var(--crit)'}">Import engine checks: ${IMPORT_TESTS.results.filter(x=>x.pass).length} of ${IMPORT_TESTS.results.length} passed${IMPORT_TESTS.ok?'':' — imports are blocked'}</summary>
+      <div style="margin-top:8px">${IMPORT_TESTS.results.map(x=>`<div class="src" style="padding:2px 0;color:${x.pass?'var(--ink-2)':'var(--crit)'}">${x.pass?'✓':'✗'} ${esc(x.name)}${x.detail?' — '+esc(x.detail):''}</div>`).join('')}</div></details>
     ${U.autoMulti?`<div class="notice"><b>${esc(U.autoMulti)} has a row per month,</b> so “Report covers” was set to several months. Each row is saved under its own month.</div>`:''}
     ${U.files.filter(f=>!f.synthetic).map((f,i) => fileCard(f, i)).join('')}
     ${hasSession ? `
@@ -1460,10 +1505,10 @@ function viewUploads(){
       <div class="filters" style="margin-bottom:10px"><button class="chip ${flt==='all'?'on':''}" data-act="upf:all">All<span>${U.recs.length}</span></button>${Object.entries(counts).map(([k,n])=>`<button class="chip ${flt===k?'on':''}" data-act="upf:${esc(k)}">${esc(k)}<span>${n}</span></button>`).join('')}</div>
       <div class="tablewrap" style="max-height:60vh;overflow:auto"><table><thead><tr><th>Source row</th><th>ID / username</th><th>Month</th><th>Matched to</th><th>Outcome</th>${MET.filter(([k])=>U.recs.some(r=>r.metrics[k]!=null)).map(([k,l])=>`<th>${esc(l)}</th>`).join('')}</tr></thead><tbody>
       ${shown.slice(0,400).map(r => { const [o,s] = recOutcome(r); const a = r.affKey ? affByKey(r.affKey) : null; const mk = MET.filter(([k])=>U.recs.some(x=>x.metrics[k]!=null)); const rk = r.file+'#'+r.row;
-        return `<tr><td class="mono">${esc(r.sheet||'')} ${r.row}</td><td><b>${esc(r.affId||'—')}</b> <span class="muted">${esc(r.user||'')}</span></td><td class="mono">${r.month?monthShort(r.month):'—'}</td>
+        return `<tr><td class="mono">${esc(r.sheet||'')} ${r.row}</td><td><b>${esc(r.affId||'—')}</b> <span class="muted">${esc(r.user||'')}</span></td><td class="mono">${r.month ? `${esc(monthLabel(r.month))}${r.monthManual?' <span class="tag amber">set by hand</span>':''}${r.period&&r.period.note&&!/Excel/.test(r.period.note)?` <span class="tag amber" title="${esc(r.period.note)}">check</span>`:''}` : `<input type="month" data-mfix="${esc(rk)}" style="background:var(--panel);border:1px solid var(--warn);border-radius:6px;padding:3px;color:var(--ink)" title="Couldn't read “${esc(cleanPeriodText(r.periodRaw||''))}”"><div class="src">“${esc(short(cleanPeriodText(r.periodRaw||'')||'blank',30))}”</div>`}</td>
         <td>${(r.flags.includes('review')||r.flags.includes('new')||r.how==='chosen'||r.how==='new-chosen'||r.flags.includes('review-id')) ? affPicker(r) : a ? `<a href="#a-${a.key}">${esc(first(a.username))}</a>` : '<span class="muted">—</span>'}${r.matchNote?`<div class="src">${esc(r.matchNote)}</div>`:''}${r.note?`<div class="src">${esc(r.note)}</div>`:''}${r.recon?`<div class="src" style="color:${r.recon.diffs.length?'var(--warn)':'var(--ink-3)'}">${r.recon.covered?`Monthly records: ${r.recon.covered}${r.recon.want?' of '+r.recon.want:''} months. `:''}${r.recon.diffs.length?r.recon.diffs.map(d=>`${d.l}: period ${fmtN(d.period,d.k)} vs months ${fmtN(d.months,d.k)}`).join('; '):(r.recon.note||'Matches monthly records')}</div>`:''}</td>
         <td><span class="tag ${s==='crit'?'red':s==='warn'?'amber':''}">${esc(o)}</span>${r.errs.length?`<div class="src">${esc(r.errs.join('; '))}</div>`:''}${r.flags.includes('differs')?`<div><label class="src"><input type="checkbox" data-act="corr:${esc(rk)}" ${U.correct[rk]?'checked':''}> Record as correction</label></div>`:''}${r.flags.includes('conflict')?`<div><label class="src"><input type="checkbox" data-act="keep:${esc(rk)}" ${U.keep[rk]?'checked':''}> Use this row</label></div>`:''}</td>
-        ${mk.map(([k])=>{ const ex = r.existing && r.existing.metrics[k]; const d = r.flags.includes('differs') && (ex??null) !== (r.metrics[k]??null); return `<td class="mono">${r.metrics[k]==null?'<span class="muted">missing</span>':fmtN(r.metrics[k],k)}${d?`<div class="src">saved: ${fmtN(ex,k)}</div>`:''}</td>`; }).join('')}</tr>`; }).join('')}
+        ${mk.map(([k])=>{ const ex = r.existing && r.existing.metrics[k]; const d = r.flags.includes('differs') && (ex??null) !== (r.metrics[k]??null); return `<td class="mono">${cellState(r.metrics[k], k, r.fieldErr, r.fields)}${d?`<div class="src">saved: ${fmtN(ex,k)}</div>`:''}</td>`; }).join('')}</tr>`; }).join('')}
       </tbody></table></div>${shown.length>400?`<p class="src">Showing 400 of ${shown.length}. Use the filters.</p>`:''}</section>
     <section class="card"><h2 style="margin-bottom:10px">Confirm</h2>
       ${Object.values(U.correct).some(Boolean)?`<label class="form" style="display:block;margin-bottom:10px"><span class="src">Reason for corrections (kept in the audit trail)</span><input id="u-reason" value="${esc(U.reason||'')}" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:var(--ink)"></label>`:''}
@@ -1572,7 +1617,7 @@ async function confirmUpload(){
   for (const r of U.recs) {
     const [outcome] = recOutcome(r); const imp = willImport(r);
     let key = r.affKey;
-    records.push({affKey:key||null, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, extra:r.extra||null, fields:r.fields||null, status:r.status, outcome, imported:imp, source:`${r.file} › ${r.sheet} row ${r.rows ? r.rows[0]+'–'+r.rows[r.rows.length-1] : r.row}`, recon: r.recon && r.recon.diffs.length ? r.recon.diffs : null});
+    records.push({affKey:key||null, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, raw:r.raw||null, fieldErr:Object.keys(r.fieldErr||{}).length?r.fieldErr:null, extra:r.extra||null, fields:r.fields||null, period:r.period||null, periodRaw:r.periodRaw||null, periodManual:!!r.monthManual, status:r.status, outcome, imported:imp, source:`${r.file} › ${r.sheet} row ${r.rows ? r.rows[0]+'–'+r.rows[r.rows.length-1] : r.row}`, recon: r.recon && r.recon.diffs.length ? r.recon.diffs : null});
   }
   const counts = {identified: new Set(U.recs.map(r => r.affKey || r.affId || r.user)).size, imported: records.filter(r=>r.imported).length, newAff, dupes: U.recs.filter(r=>r.flags.includes('dupe-same')||r.flags.includes('conflict')).length, review: U.recs.filter(r=>!willImport(r) && !['Missing data, not imported','Already imported, same figures','Duplicate, skipped','Conflict, not used','Before first activity, not imported'].includes(recOutcome(r)[0])).length, missing:U.recs.filter(r=>r.status==='missing').length, failed:U.recs.filter(r=>r.status==='failed').length};
   const batch = {id, kind:U.kind, mode:U.mode, test:U.test, month: U.kind==='monthly' && U.mode==='month' ? U.month : null, period: U.mode==='period' ? periodSlot() : null, monthsLabel: U.mode==='period' ? 'Period total: ' + monthLabel(periodSlot()) : months.length>1 ? `${monthLabel(months[0])} – ${monthLabel(months[months.length-1])}` : months.length === 1 && U.mode !== 'month' ? monthLabel(months[0]) : null, uploadedAt:at, by:Store.me||null, byName:by, files:U.files.map(f=>({name:f.name, hash:f.hash, kind:f.kind, size:f.size, sheet:f.tables[f.tIdx]?.name||null, mapping:f.mapping?f.mapping.map:null})), counts, status:'confirmed', validation:U.validation.map(x=>({level:x.level, text:x.text})), records, corrections:[]};
@@ -1585,7 +1630,7 @@ async function confirmUpload(){
   for (const r of records.filter(r => r.imported)) {
     const col = slotStore(r.month); const pid = perfId(r.affKey, r.affId, r.month); const ex = Store[col][pid];
     const body = ex ? {...ex, metrics:r.metrics, version:(ex.version||1)+1, correctedAt:at, byName:by, reason, batchId:id, history:[{version:ex.version||1, metrics:ex.metrics, at:ex.correctedAt||ex.confirmedAt, byName:ex.byName, batchId:ex.batchId, reason:ex.reason||null}, ...(ex.history||[])]}
-      : {affKey:r.affKey, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, extra:r.extra||null, fields:r.fields||null, status:r.status, batchId:id, source:r.source, confirmedAt:at, byName:by, version:1, history:[]};
+      : {affKey:r.affKey, affId:r.affId, user:r.user, month:r.month, metrics:r.metrics, raw:r.raw||null, fieldErr:r.fieldErr||null, extra:r.extra||null, fields:r.fields||null, period:r.period||null, periodRaw:r.periodRaw||null, periodManual:!!r.periodManual, status:r.status, batchId:id, source:r.source, confirmedAt:at, byName:by, version:1, history:[]};
     if (await Store.write(col+'/'+pid, body)) Store[col][pid] = body;
   }
   _aggCache = null;
@@ -1628,7 +1673,8 @@ function rebuild(){
   validate(); viewUploads();
 }
 /* a report broken down by day is rolled up into one record per affiliate per month (within the same file only) */
-function markPrestart(recs){
+function markPrestart(recs){ return recs; }
+function markPrestartOld(recs){
   const groups = {};
   recs.forEach(r => { if (r.month && !isPeriod(r.month)) (groups[(r.affId||'')+'|'+(r.user||'').toLowerCase()] ||= []).push(r); });
   Object.values(groups).forEach(g => { const act = g.filter(r => r.status === 'ok').map(r => r.month).sort()[0]; g.forEach(r => { r.prestart = U.skipPre !== false && r.status === 'zero' && (!act || r.month < act); }); });
@@ -1664,6 +1710,7 @@ function wireUpload(){
   document.querySelectorAll('[data-fmap]').forEach(s => s.addEventListener('change', () => { const [i,c] = s.dataset.fmap.split(':').map(Number); const f = U.files[i]; Object.keys(f.mapping.map).forEach(k => { if (f.mapping.map[k] === s.value && s.value) delete f.mapping.map[k]; }); if (s.value) f.mapping.map[c] = s.value; else delete f.mapping.map[c]; rebuild(); }));
   document.querySelectorAll('[data-faff]').forEach(s => s.addEventListener('change', () => { const f = U.files[+s.dataset.faff]; f.affPick = s.value || null; f.confirmed = false; validate(); viewUploads(); }));
   document.querySelectorAll('[data-fconf]').forEach(s => s.addEventListener('change', () => { const f = U.files[+s.dataset.fconf]; f.confirmed = s.checked; validate(); viewUploads(); }));
+  document.querySelectorAll('[data-mfix]').forEach(s => s.addEventListener('change', () => { U.monthFix = U.monthFix || {}; if (s.value) U.monthFix[s.dataset.mfix] = s.value; else delete U.monthFix[s.dataset.mfix]; rebuild(); }));
   document.querySelectorAll('[data-pick]').forEach(s => s.addEventListener('change', () => { if (s.value) U.choice[s.dataset.pick] = s.value; else delete U.choice[s.dataset.pick]; validate(); viewUploads(); }));
   const rs = document.getElementById('u-reason'); if (rs) rs.addEventListener('input', () => U.reason = rs.value);
 }
@@ -1681,7 +1728,7 @@ function viewPerformance(){
   if (!perfSel.month || !months.includes(perfSel.month)) perfSel.month = lastFull();
   const m = perfSel.month, pm = prevMonth(m);
   const {t, n} = monthTotals(m); const P0 = monthTotals(pm).t; const hasPrev = months.includes(pm);
-  const delta = k => { if (!hasPrev || t[k]==null || P0[k]==null || !P0[k]) return ''; const d = (t[k]-P0[k])/Math.abs(P0[k])*100; return `<span class="h" style="color:${d>=0?'var(--good)':'var(--crit)'}">${d>=0?'▲':'▼'} ${Math.abs(d).toFixed(0)}% vs ${monthShort(pm)}</span>`; };
+  const delta = k => { const c = momChange(t[k] ?? null, P0[k] ?? null, hasPrev); return `<span class="h" style="color:${c.c}">${esc(c.t)}${hasPrev && c.d != null ? ' vs ' + monthShort(pm) : ''}</span>`; };
   const rows = Object.values(perfAgg()).filter(p => p.month === m).map(p => ({p, a:affByKey(p.affKey)}));
   const sk = perfSel.sort; rows.sort((x,y) => (y.p.metrics[sk]??-1e15) - (x.p.metrics[sk]??-1e15));
   const span = []; for (let x = months[0]; x <= months[months.length-1]; ) { span.push(x); const d = new Date(x+'-01T00:00:00'); d.setMonth(d.getMonth()+1); x = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
@@ -1691,7 +1738,7 @@ function viewPerformance(){
   V.innerHTML = `<div class="wrap">
     <div class="head"><div><h1>Performance</h1><p class="sub">${monthLabel(m)}${partial(m)?' (month not finished, partial figures)':''} · ${n} affiliates reported · confirmed imports only</p></div>
       <div style="display:flex;gap:8px;align-items:center"><label class="src">Month <select id="pm" style="background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--ink)">${months.slice().reverse().map(x=>`<option value="${x}" ${x===m?'selected':''}>${monthLabel(x)}${partial(x)?' (partial)':''}</option>`).join('')}</select></label></div></div>
-    <section class="grid tiles">${['clicks','regs','ftd','depSum','ngr','commission'].map(k=>`<div class="tile" style="cursor:default"><span class="v">${t[k]==null?'—':fmtN(t[k],k)}</span><span class="l">${METL[k]}</span>${t[k]==null?'<span class="h">Not in this month\'s reports</span>':delta(k)}</div>`).join('')}
+    <section class="grid tiles">${['clicks','regs','ftd','depSum','ngr','commission'].map(k=>`<div class="tile" style="cursor:default"><span class="v">${t[k]==null?'—':fmtN(t[k],k)}</span><span class="l">${METL[k]}</span>${t[k]==null?'<span class="h">Not available in this month\'s reports</span>':delta(k)}</div>`).join('')}
       <div class="tile" style="cursor:default"><span class="v">${pctS(t.regs,t.clicks)}</span><span class="l">Click → registration</span></div>
       <div class="tile" style="cursor:default"><span class="v">${pctS(t.ftd,t.regs)}</span><span class="l">Registration → FTD</span></div></section>
     <div class="two">
@@ -1699,11 +1746,11 @@ function viewPerformance(){
       <section class="card"><h2 style="margin-bottom:8px">Alerts for ${monthShort(m)}</h2>${alerts.length?alerts.map(x=>`<div class="op" style="grid-template-columns:4px 1fr"><span class="bar" style="background:${SEVC2[x.sev]}"></span><div><button class="t" data-act="open:a-${esc(x.key)}">${esc(x.title)}</button><div class="why">${esc(x.why)}</div></div></div>`).join(''):'<p class="muted">No alerts.</p>'}</section>
     </div>
     <div class="tablewrap"><table><thead><tr><th>Affiliate</th>${[['clicks','Clicks'],['regs','Regs'],['ftd','FTDs'],['depSum','Deposits'],['withdrawals','Withdrawals'],['ngr','NGR'],['commission','Commission']].map(([k,l])=>`<th><button class="btn" style="padding:2px 6px;font-size:11px" data-act="psort:${k}">${l}${sk===k?' ↓':''}</button></th>`).join('')}<th>Click→Reg</th><th>Reg→FTD</th><th>vs ${monthShort(pm)} FTDs</th></tr></thead><tbody>
-    ${rows.map(({p,a})=>{ const q = aggGet(p.affKey, pm); const x = p.metrics; const d = q && q.metrics.ftd!=null && x.ftd!=null ? x.ftd - q.metrics.ftd : null;
-      return `<tr class="click" data-act="open:a-${esc(p.affKey)}"><td><b>${esc(a?first(a.username):p.user)}</b>${a&&a.isNewAff?' <span class="tag amber">New</span>':''}${p.version>1?' <span class="tag amber">Corrected</span>':''}${p.docs.length>1?` <span class="src">${p.docs.length} accounts</span>`:''}</td>${['clicks','regs','ftd','depSum','withdrawals','ngr','commission'].map(k=>`<td class="mono" style="${k==='ngr'&&x.ngr<0?'color:var(--crit)':''}">${x[k]==null?'<span class="muted">—</span>':fmtN(x[k],k)}</td>`).join('')}<td class="mono">${pctS(x.regs,x.clicks)}</td><td class="mono">${pctS(x.ftd,x.regs)}</td><td class="mono">${d==null?'—':(d>0?'+':'')+d}</td></tr>`; }).join('')}
+    ${rows.map(({p,a})=>{ const q = aggGet(p.affKey, pm); const x = p.metrics; const mc = momChange(x.ftd ?? null, q ? (q.metrics.ftd ?? null) : null, !!q);
+      return `<tr class="click" data-act="open:a-${esc(p.affKey)}"><td><b>${esc(a?first(a.username):p.user)}</b>${a&&a.isNewAff?' <span class="tag amber">New</span>':''}${p.version>1?' <span class="tag amber">Corrected</span>':''}${p.status==='zero'?' <span class="tag">No activity (0)</span>':''}${p.docs.length>1?` <span class="src">${p.docs.length} accounts</span>`:''}</td>${['clicks','regs','ftd','depSum','withdrawals','ngr','commission'].map(k=>`<td class="mono" style="${k==='ngr'&&x.ngr<0?'color:var(--crit)':''}">${cellState(x[k], k, p.fieldErr, p.fields)}</td>`).join('')}<td class="mono">${pctS(x.regs,x.clicks)}</td><td class="mono">${pctS(x.ftd,x.regs)}</td><td style="font-size:12.5px;color:${mc.c}">${esc(mc.t)}</td></tr>`; }).join('')}
     </tbody></table></div>
     ${periodSection()}
-    <p class="src">“—” means the figure wasn't in that month's report (missing), which is different from a reported 0. NGR is revenue to the operator before costs. It is not profit, and these figures aren't tied to specific marketing spend.</p>
+    <p class="src">0 is a reported zero. “Not available” means the report had no value for it. “Import error” means the value couldn't be read. A month with no uploaded report isn't listed. NGR is revenue to the operator before costs. It is not profit, and these figures aren't tied to specific marketing spend.</p>
   </div>`;
   document.getElementById('pm').addEventListener('change', e => { perfSel.month = e.target.value; viewPerformance(); });
   const pmet = document.getElementById('pmet'); if (pmet) pmet.addEventListener('change', e => { perfSel.metric = e.target.value; viewPerformance(); });
@@ -1732,6 +1779,30 @@ function trendChart(series, k, sel){
     ${series.map((s,i)=>`<text x="${pad.l+i*bw+bw/2}" y="${H-8}" text-anchor="middle" font-size="11" fill="${s.m===sel?'var(--ink)':'var(--ink-3)'}">${monthShort(s.m)}</text>`).join('')}
   </svg>`;
 }
+function openPerfMonth(key, m){
+  const p = aggGet(key, m); if (!p) return; const a = affByKey(key);
+  openDrawer = () => openPerfMonth(key, m);
+  const q = aggGet(key, addMonths(m, -1));
+  const docs = p.docs.map(id => [id, Store.perf[id]]);
+  const extraKeys = [...new Set(docs.flatMap(([,d]) => Object.keys(d.extra||{})))].sort();
+  const ex = k => { let s = null; docs.forEach(([,d]) => { const v = (d.extra||{})[k]; if (v != null) s = (s||0) + v; }); return s; };
+  const dr = document.getElementById('drawer');
+  dr.innerHTML = `<div class="dhead"><div><div class="src">${esc(a ? first(a.username) : key)} · reporting period ${esc(m)}</div><h1 style="font-size:30px;margin:4px 0">${esc(monthLabel(m))}</h1>
+    ${p.status==='zero'?'<span class="tag">No activity recorded (0)</span> ':''}${partial(m)?'<span class="tag amber">Month not finished</span> ':''}${p.version>1?'<span class="tag amber">Corrected</span>':''}</div><button class="close" data-act="close" aria-label="Close">×</button></div>
+  <div class="dbody">
+    <section class="sec card"><h2>Figures</h2><div class="tablewrap" style="border:0"><table><thead><tr><th>Metric</th><th>${monthShort(m)}</th><th>${monthShort(addMonths(m,-1))}</th><th>Change</th><th>As in the report</th></tr></thead><tbody>
+    ${MET.map(([k,l]) => { if (!(k in (p.fields||{})) && p.metrics[k] == null) return ''; const c = momChange(p.metrics[k] ?? null, q ? (q.metrics[k] ?? null) : null, !!q);
+      const raws = docs.map(([,d]) => d.raw && d.raw[k] != null ? d.raw[k] : null).filter(x => x != null);
+      return `<tr><td>${esc(l)}${p.fields&&p.fields[k]?`<div class="src">“${esc(p.fields[k])}”</div>`:''}</td><td class="mono">${cellState(p.metrics[k], k, p.fieldErr, p.fields)}</td><td class="mono">${q ? cellState(q.metrics[k], k, q.fieldErr, q.fields) : '<span class="muted">Not imported</span>'}</td><td style="font-size:12.5px;color:${c.c}">${esc(c.t)}</td><td class="mono" style="font-size:12px;color:var(--ink-3)">${esc(raws.join(' + '))}</td></tr>`; }).join('')}
+    </tbody></table></div></section>
+    ${extraKeys.length?`<section class="sec card"><h2>Product-level figures</h2><dl>${extraKeys.map(k=>`<dt>${esc(k)}</dt><dd class="mono">${esc((ex(k)??0).toLocaleString('en-ZA',{maximumFractionDigits:2}))}</dd>`).join('')}</dl></section>`:''}
+    <section class="sec card"><h2>Source</h2>${docs.map(([id,d])=>`<div style="padding:6px 0;border-top:1px solid var(--line)"><div class="src">${esc(d.source||'')}</div>
+      <div class="src">Reporting period ${esc(d.month)}${d.period?` · ${esc(d.period.monthName)} (${d.period.monthNum}) ${d.period.year}`:''}${d.periodRaw?` · cell read as “${esc(cleanPeriodText(d.periodRaw))}”`:''}${d.periodManual?' · month set by hand':''}</div>
+      <div class="src">Imported ${esc((d.confirmedAt||'').slice(0,16).replace('T',' '))} by ${esc(d.byName||'')}${d.affId?' · affiliate ID '+esc(d.affId):''}</div>
+      ${Store.canWrite?`<button class="btn" style="margin-top:6px" data-act="fix:${esc(id)}">Correct this record</button>`:''}</div>`).join('')}</section>
+  </div>`;
+  dr.classList.add('open'); document.getElementById('scrim').classList.add('open');
+}
 function profilePeriods(key){
   const L = Object.entries(Store.periods||{}).filter(([id,p]) => p.affKey === key).sort((a,b)=>b[1].month.localeCompare(a[1].month));
   if (!L.length) return '';
@@ -1744,16 +1815,20 @@ function profilePeriods(key){
 }
 function profilePerf(key){
   const L = perfFor(key);
-  if (!L.length) return `<section class="sec card"><h2>Monthly performance</h2><p class="muted">No confirmed monthly figures for this affiliate yet.</p></section>`;
-  const mk = MET.filter(([k]) => L.some(p => p.metrics[k] != null));
-  return `<section class="sec card"><h2>Monthly performance</h2><div class="tablewrap" style="border:0"><table><thead><tr><th>Metric</th>${L.map(p=>`<th>${monthShort(p.month)}${p.version>1?' *':''}</th>`).join('')}</tr></thead><tbody>
-    ${mk.map(([k,l])=>`<tr><td>${esc(l)}</td>${L.map(p=>`<td class="mono" style="${k==='ngr'&&p.metrics[k]<0?'color:var(--crit)':''}">${p.metrics[k]==null?'<span class="muted">—</span>':fmtN(p.metrics[k],k)}</td>`).join('')}</tr>`).join('')}
-    <tr><td class="src">Records</td>${L.map(p=>`<td>${p.docs.map(pid=>{ const d = Store.perf[pid]; return `<button class="btn" style="padding:2px 6px;font-size:11px;margin:1px" title="${esc(d.source||'')}" data-act="fix:${esc(pid)}">${esc(d.affId?('ID '+d.affId):'Edit')}</button>`; }).join('')}</td>`).join('')}</tr>
-  </tbody></table></div><p class="src">* corrected after import. “—” = not in the report. Tap a record button to see its source and history, or to correct it.</p>
-  ${(() => { const keys = [...new Set(L.flatMap(p => p.docs.flatMap(id => Object.entries(Store.perf[id].extra||{}).filter(([k,v]) => v !== 0).map(([k]) => k))))].sort();
-    if (!keys.length) return '';
-    const val = (p, k) => { let s = null; p.docs.forEach(id => { const v = (Store.perf[id].extra||{})[k]; if (v != null) s = (s||0) + v; }); return s; };
-    return `<details style="margin-top:10px"><summary class="src" style="cursor:pointer">Product-level figures (${keys.length} columns, as supplied in the reports)</summary><div class="tablewrap" style="border:0;margin-top:6px"><table><thead><tr><th>Report column</th>${L.map(p=>`<th>${monthShort(p.month)}</th>`).join('')}</tr></thead><tbody>${keys.map(k=>`<tr><td style="font-size:12.5px">${esc(k)}</td>${L.map(p=>{ const v = val(p,k); return `<td class="mono">${v==null?'<span class="muted">—</span>':esc(v.toLocaleString('en-ZA',{maximumFractionDigits:2}))}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div></details>`; })()}
+  if (!L.length) return `<section class="sec card"><h2>Monthly performance</h2><p class="muted">No reports imported for this affiliate yet.</p></section>`;
+  const span = []; for (let x = L[0].month; x <= L[L.length-1].month; x = addMonths(x, 1)) span.push(x);
+  const C = [['clicks','Clicks'],['regs','Signups'],['ftd','FTDs'],['depSum','Deposits'],['withdrawals','Withdrawals'],['ngr','NGR'],['commission','Earnings']];
+  const byM = Object.fromEntries(L.map(p => [p.month, p]));
+  return `<section class="sec card"><h2>Monthly performance</h2>
+  <p class="src" style="margin-bottom:8px">${L.length} reporting month${L.length>1?'s':''} imported, ${monthLabel(span[0])} to ${monthLabel(span[span.length-1])}. Tap a month for all its figures.</p>
+  <div class="tablewrap" style="border:0"><table><thead><tr><th>Reporting month</th>${C.map(([,l])=>`<th>${l}</th>`).join('')}<th>FTDs vs previous month</th></tr></thead><tbody>
+  ${span.map((m, i) => { const p = byM[m];
+    if (!p) return `<tr><td class="mono">${monthShort(m)}</td><td colspan="${C.length+1}" class="muted">Not imported. No report uploaded for this month.</td></tr>`;
+    const q = byM[addMonths(m, -1)]; const mc = momChange(p.metrics.ftd ?? null, q ? (q.metrics.ftd ?? null) : null, !!q);
+    return `<tr class="click" data-act="pm:${esc(key)}|${esc(m)}"><td class="mono"><b>${monthShort(m)}</b>${p.status==='zero'?'<div class="src">No activity recorded (0)</div>':''}${partial(m)?'<div class="src">Month not finished</div>':''}${p.version>1?'<div class="src">Corrected</div>':''}${Object.keys(p.fieldErr||{}).length?'<div class="src" style="color:var(--crit)">Has import errors</div>':''}</td>
+      ${C.map(([k])=>`<td class="mono" style="${k==='ngr'&&p.metrics[k]<0?'color:var(--crit)':''}">${cellState(p.metrics[k], k, p.fieldErr, p.fields)}</td>`).join('')}<td style="font-size:12.5px;color:${mc.c}">${esc(mc.t)}</td></tr>`; }).join('')}
+  </tbody></table></div>
+  <p class="src">0 = reported as zero · Not available = no value in the report · Import error = value couldn't be read · Not imported = no report for that month. NGR is shown as supplied (“Calculated NGR”), never worked out from deposits and withdrawals.</p>
   </section>`;
 }
 
@@ -2202,6 +2277,53 @@ function openAddAffiliate(){
   });
 }
 
+/* ---------- import engine self-tests ---------- */
+const IMPORT_TESTS = {ok:true, results:[]};
+function runImportTests(){
+  const R = []; const T = (name, fn) => { try { const r = fn(); R.push({name, pass: r === true, detail: r === true ? '' : String(r)}); } catch(e) { R.push({name, pass:false, detail:e.message}); } };
+  const eq = (a, b, what) => JSON.stringify(a) === JSON.stringify(b) ? true : `${what}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`;
+  const H = '"Month and Year","Clicks","Signups","Calculated NGR","DEPOSITS","FIRST DEPOSIT Count","WITHDRAWALS","Earnings","Payments"\n';
+  const mo = (label, vals) => `"${label}\n    \n\n\n    Customer Report",${vals.map(v => `"${v}"`).join(',')}\n`;
+  const run = (csv, name = 'MyAffiliates - Affiliate Dashboard - testaff.csv') => {
+    const saved = U; newSession(); U.mode = 'multi';
+    const TA = {key:'zz-selftest-affiliate', ids:['000'], usernames:['testaff'], userIds:{testaff:'000'}, username:'testaff', status:'test', urls:[], exposureUrls:[], contractSteps:[], emails:[], telegram:[], missing:[]};
+    A.push(TA);
+    try { const f = {name, tables: readCsv(csv), affPick:TA.key, confirmed:true}; f.mapping = detectMapping(f.tables[0].rows); f.tIdx = 0; const x = extractRecords(f, 0, f.mapping, null);
+      f.recsOwn = x.recs; f.totals = x.totals; f.warnings = x.warn; U.files = [f]; U.recs = x.recs; validate(); return {...x, recs:U.recs, map:f.mapping}; }
+    finally { A.splice(A.indexOf(TA), 1); U = saved; }
+  };
+  T('Month name with extra whitespace', () => { const r = parsePeriod('   October     2026   '); return eq([r.period, r.monthName, r.monthNum, r.year], ['2026-10','October',10,2026], 'October 2026'); });
+  T('Line breaks and “Customer Report” ignored', () => eq(parsePeriod('November 2026\n    \n\n\n    Customer Report').period, '2026-11', 'period'));
+  T('Different years kept as written', () => eq(['March 2024','July 2025','January 2027','December 2025'].map(x => parsePeriod(x).period), ['2024-03','2025-07','2027-01','2025-12'], 'periods'));
+  T('Missing year is not guessed', () => eq(parsePeriod('October'), null, 'no year'));
+  T('Other date layouts', () => eq(['2026-10','01/10/2026','10/2026','Oct-2026','1 October 2026','2026 October'].map(x => parsePeriod(x).period), Array(6).fill('2026-10'), 'periods'));
+  T('Excel date cell', () => { const serial = (Date.UTC(2026,9,1) - Date.UTC(1899,11,30)) / 864e5; return eq(parsePeriod(String(serial)).period, '2026-10', 'serial'); });
+  T('Two-digit year flagged for checking', () => { const r = parsePeriod('Nov-26'); return r && r.period === '2026-11' && r.note ? true : 'expected 2026-11 with a warning'; });
+  T('Number formats', () => eq(['1,374.02','-3,579.00','0.00','R0.00','(500.00)','-139,781.84','R1,253.60'].map(x => parseNum(x).v), [1374.02,-3579,0,0,-500,-139781.84,1253.6], 'numbers'));
+  T('Blank is missing, not zero', () => eq([parseNum('').v, parseNum(null).v, parseNum('0').v], [null, null, 0], 'blank/null/0'));
+  T('December to January transition', () => { const x = run(H + mo('January 2026', [4,0,'0.00','0.00',0,'0.00','0.00','R0.00']) + mo('December 2025', [0,0,'0.00','0.00',0,'0.00','0.00','R0.00']));
+    return eq([x.recs.map(r => r.month), prevMonth('2026-01'), addMonths('2025-12', 1)], [['2026-01','2025-12'], '2025-12', '2026-01'], 'months'); });
+  T('Zero-activity month imported as zeros', () => { const x = run(H + mo('December 2025', [0,0,'0.00','0.00',0,'0.00','0.00','R0.00'])); const r = x.recs[0];
+    return r.status === 'zero' && r.metrics.clicks === 0 && r.metrics.ngr === 0 && willImport(r) ? true : `status ${r.status}, clicks ${r.metrics.clicks}, import ${willImport(r)}`; });
+  T('Negative NGR kept and imported', () => { const x = run(H + mo('May 2026', [1003,127,'-3,579.00','21,045.00',32,'25,300.86','5,430.71','R0.00'])); const r = x.recs[0];
+    return r.metrics.ngr === -3579 && willImport(r) ? true : `ngr ${r.metrics.ngr}, import ${willImport(r)}`; });
+  T('Missing metric is not zero', () => { const x = run('"Month and Year","Clicks","Signups","Calculated NGR"\n' + `"October 2026",117,"",406.72\n`); const r = x.recs[0];
+    return r.metrics.regs === null && r.metrics.withdrawals === undefined && r.metrics.clicks === 117 ? true : JSON.stringify(r.metrics); });
+  T('Unreadable value is an import error, rest kept', () => { const x = run(H + mo('October 2026', [117,'abc','406.72','7,663.00',4,'3,470.00','911.69','R0.00'])); const r = x.recs[0];
+    return r.fieldErr.regs === 'abc' && r.metrics.clicks === 117 && r.partial && willImport(r) ? true : JSON.stringify({fe:r.fieldErr, st:r.status}); });
+  T('Every month in one file, Lifetime not a month', () => { let csv = H; const ms = ['November 2026','October 2026','September 2026','August 2026','July 2026','June 2026','May 2026','April 2026','March 2026','February 2026','January 2026','December 2025','November 2025'];
+    ms.forEach((m, i) => csv += mo(m, [i, 0, '0.00', '0.00', 0, '0.00', '0.00', 'R0.00'])); csv += `"Lifetime","78","0","0.00","0.00","0","0.00","0.00","R0.00"\n`;
+    const x = run(csv); const got = x.recs.map(r => r.month); return got.length === 13 && new Set(got).size === 13 && x.totals && x.totals.label === 'Lifetime' && x.recs.every(willImport) ? true : `${got.length} months, totals ${!!x.totals}, all import ${x.recs.every(willImport)}`; });
+  T('Duplicate month, same figures: imported once', () => { const row = mo('October 2026', [117,6,'406.72','7,663.00',4,'3,470.00','911.69','R0.00']); const x = run(H + row + row);
+    return x.recs.filter(willImport).length === 1 ? true : `${x.recs.filter(willImport).length} rows would import`; });
+  T('Duplicate month, different figures: held for reconciliation', () => { const x = run(H + mo('October 2026', [117,6,'406.72','0','4','0','0','R0']) + mo('October 2026', [200,6,'406.72','0','4','0','0','R0']));
+    return x.recs.every(r => r.flags.includes('conflict')) && !x.recs.some(willImport) ? true : x.recs.map(r => r.flags.join('/')).join(' | '); });
+  T('Unreadable month flagged, rest of report kept', () => { const x = run(H + mo('Customer Report', [1,1,'1','1',1,'1','1','R0']) + mo('October 2026', [117,6,'406.72','0',4,'0','0','R0']));
+    const bad = x.recs.find(r => !r.month), good = x.recs.find(r => r.month === '2026-10'); return bad && bad.flags.includes('nomonth') && good && willImport(good) ? true : 'expected one flagged row and one importable row'; });
+  T('Month-on-month without dividing by zero', () => eq([momChange(5,0).t, momChange(0,0).t, momChange(null,3).t, momChange(10,5).t, momChange(3,4,false).t], ['New activity','No change','Not available','▲ 100%','No comparable baseline'], 'changes'));
+  IMPORT_TESTS.results = R; IMPORT_TESTS.ok = R.every(x => x.pass); IMPORT_TESTS.at = new Date().toISOString();
+  return IMPORT_TESTS;
+}
 /* ---------- search ---------- */
 const Q = document.getElementById('q'), R = document.getElementById('results');
 Q.addEventListener('input', () => {
@@ -2249,6 +2371,7 @@ document.addEventListener('click', e => {
   else if (cmd === 'snooze') { if (!Store.canWrite) return toast('View-only access'); Store.ops.snooze = {...Store.ops.snooze, [arg]: Date.now()+864e5}; Store.saveOps(); refresh(); toast('Snoozed until tomorrow'); }
   else if (cmd === 'p') { R.classList.remove('open'); openProspect(arg); }
   else if (cmd === 'medit') openMasterEdit(arg);
+  else if (cmd === 'pm') { const [k, m] = arg.split('|'); openPerfMonth(k, m); }
   else if (cmd === 'aadd') openAddAffiliate();
   else if (cmd === 'mconfirm') confirmMaster();
   else if (cmd === 'mcancel') { MU = null; viewMaster(); }
@@ -2286,6 +2409,7 @@ document.getElementById('brand').addEventListener('change', () => { draw(lastRou
 window.addEventListener('hashchange', render);
 
 rebuildMaster();
+try { runImportTests(); } catch(e) { IMPORT_TESTS.ok = false; IMPORT_TESTS.results = [{name:'Self-test could not run', pass:false, detail:e.message}]; }
 updateBell(); render(); setSync();
 Store.init().then(() => { setSync(); refresh(); });
 </script>
